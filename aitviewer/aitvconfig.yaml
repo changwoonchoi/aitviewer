@@ -1,5 +1,5 @@
 # Access SMPL models.
-smplx_models: "../data/smplx_models"
+smplx_models: "./data/smplx_models"
 star_models: "../data/star_models"
 supr_models: "../data/supr_models"
 
@@ -24,9 +24,9 @@ window_height: 900
 fullscreen: False
 resizable: True
 vsync: True
-export_dir: "../export"
-playback_fps: 60
-scene_fps: 60
+export_dir: "./export"
+playback_fps: 30
+scene_fps: 30
 run_animations: False
 dark_mode: False
 shadows_enabled: True
