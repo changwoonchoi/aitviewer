@@ -62,7 +62,7 @@ class Scene(Node):
         self.add(self.origin)
 
         self.floor = ChessboardPlane(
-            100.0, 200, (0.9, 0.9, 0.9, 1.0), (0.82, 0.82, 0.82, 1.0), "xy" if C.z_up else "xz", name="Floor"
+            100.0, 200, (0.9, 0.9, 0.9, 0.0), (0.82, 0.82, 0.82, 0.0), "xy" if C.z_up else "xz", name="Floor"
         )
         self.floor.material.diffuse = 0.1
         self.add(self.floor)
@@ -238,7 +238,7 @@ class Scene(Node):
         """Finds the minimum lower bound in the y coordinate from all the children bounds and uses that as the floor"""
         if self.floor is not None and len(self.nodes) > 0:
             axis = 2 if C.z_up else 1
-            self.floor.position[axis] = self.current_bounds[axis, 0]
+            self.floor.position[axis] = self.current_bounds[axis, 1]
             self.floor.update_transform(parent_transform=self.model_matrix)
 
     def auto_set_camera_target(self):

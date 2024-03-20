@@ -1221,3 +1221,213 @@ class ViewerCamera(CameraInterface):
         u, idx = imgui.combo("Control mode", self._control_modes.index(self.control_mode), control_modes_labels)
         if u and idx >= 0 and idx <= len(self._control_modes):
             self.control_mode = self._control_modes[idx]
+
+
+
+class MyCamera(Camera):
+    """A camera described by extrinsics and intrinsics in the format used by OpenCV"""
+
+    def __init__(
+        self,
+        K,
+        Rt,
+        cols,
+        rows,
+        dist_coeffs=None,
+        near=None,
+        far=None,
+        viewer=None,
+        **kwargs,
+    ):
+        """Initializer.
+        :param K:  A np array of camera intrinsics in the format used by OpenCV (3, 3) or (N, 3, 3), one for each frame.
+        :param Rt: A np array of camera extrinsics in the format used by OpenCV (3, 4) or (N, 3, 4), one for each frame.
+        :param dist_coeffs: Lens distortion coefficients in the format used by OpenCV (5).
+        :param cols: Width  of the image in pixels, matching the size of the image expected by the intrinsics matrix.
+        :param rows: Height of the image in pixels, matching the size of the image expected by the intrinsics matrix.
+        :param near: Distance of the near plane from the camera.
+        :param far: Distance of the far plane from the camera.
+        :param viewer: The current viewer, if not None the gui for this object will show a button for viewing from this
+          camera in the viewer.
+        """
+        self.K = K if len(K.shape) == 3 else K[np.newaxis]
+        self.Rt = Rt if len(Rt.shape) == 3 else Rt[np.newaxis]
+
+        assert len(self.Rt.shape) == 3
+        assert len(self.K.shape) == 3
+
+        assert (
+            self.K.shape[0] == 1 or self.Rt.shape[0] == 1 or self.K.shape[0] == self.Rt.shape[0]
+        ), f"extrinsics and intrinsics array shape mismatch: {self.Rt.shape} and {self.K.shape}"
+
+        kwargs["gui_affine"] = False
+        super(MyCamera, self).__init__(viewer=viewer, n_frames=max(self.K.shape[0], self.Rt.shape[0]), **kwargs)
+        self.position = self.current_position
+        self.rotation = self.current_rotation
+
+        self.dist_coeffs = dist_coeffs
+        self.cols = cols
+        self.rows = rows
+
+        self.near = near if near is not None else C.znear
+        self.far = far if far is not None else C.zfar
+
+    def on_frame_update(self):
+        self.position = self.current_position
+        self.rotation = self.current_rotation
+
+    @property
+    def current_position(self):
+        Rt = self.current_Rt
+        pos = Rt[:, 0:3].T @ Rt[:, 3]
+        return pos
+
+    @property
+    def current_rotation(self):
+        Rt = self.current_Rt
+        rot = np.copy(Rt[:, 0:3].T)
+        rot[:, 1:] *= -1.0
+        return rot
+
+    @property
+    def current_K(self):
+        K = self.K[0] if self.K.shape[0] == 1 else self.K[self.current_frame_id]
+        return K
+
+    @property
+    def current_Rt(self):
+        Rt = self.Rt[0] if self.Rt.shape[0] == 1 else self.Rt[self.current_frame_id]
+        return Rt
+
+    @property
+    def forward(self):
+        return self.current_Rt[2, :3]
+
+    @property
+    def up(self):
+        return -self.current_Rt[1, :3]
+
+    @property
+    def right(self):
+        return self.current_Rt[0, :3]
+
+    def compute_opengl_view_projection(self, width, height):
+        # Construct view and projection matrices which follow OpenGL conventions.
+        # Adapted from https://amytabb.com/tips/tutorials/2019/06/28/OpenCV-to-OpenGL-tutorial-essentials/
+
+        # Compute view matrix V
+        lookat = np.copy(self.current_Rt)
+        # Invert Y -> flip image bottom to top
+        # Invert Z -> OpenCV has positive Z forward, we use negative Z forward
+        lookat[1:3, :] *= 1.0
+        V = np.vstack((lookat, np.array([0, 0, 0, 1])))
+
+        # Compute projection matrix P
+        K = self.current_K
+        rows, cols = self.rows, self.cols
+        near, far = self.near, self.far
+
+        # Compute number of columns that we would need in the image to preserve the aspect ratio
+        window_cols = width / height * rows
+
+        # Offset to center the image on the x direction
+        x_offset = (window_cols - cols) * 0.5
+
+        # Calibration matrix with added Z information and adapted to OpenGL coordinate
+        # system which has (0,0) at center and Y pointing up
+        Kgl = np.array(
+            [
+                [-K[0, 0], 0, -(cols - K[0, 2]) - x_offset, 0],
+                [0, -K[1, 1], (rows - K[1, 2]), 0],
+                [0, 0, -(near + far), -(near * far)],
+                [0, 0, -1, 0],
+            ]
+        )
+
+        # Transformation from pixel coordinates to normalized device coordinates used by OpenGL
+        NDC = np.array(
+            [
+                [-2 / window_cols, 0, 0, 1],
+                [0, -2 / rows, 0, -1],
+                [0, 0, 2 / (far - near), -(far + near) / (far - near)],
+                [0, 0, 0, 1],
+            ]
+        )
+
+        P = NDC @ Kgl
+
+        return V, P
+
+    def update_matrices(self, width, height):
+        V, P = self.compute_opengl_view_projection(width, height)
+
+        # Update camera matrices
+        self.projection_matrix = P.astype("f4")
+        self.view_matrix = V.astype("f4")
+        self.view_projection_matrix = np.matmul(P, V).astype("f4")
+
+    def to_pinhole_camera(self, target_distance=5, **kwargs) -> "PinholeCamera":
+        """
+        Returns a PinholeCamera object with positions and targets computed from this camera.
+        :param target_distance: distance from the camera at which the target of the PinholeCamera is placed.
+
+        Remarks:
+         The Pinhole camera does not currently support skew, offset from the center and non vertical up vectors.
+         Also the fov from the first intrinsic matrix is used for all frames because the PinholeCamera does not
+         support sequences of fov values.
+        """
+        # Save current frame id.
+        current_frame_id = self.current_frame_id
+
+        # Compute position and target for each frame.
+        # Pinhole camera currently does not support custom up direction.
+        positions = np.zeros((self.n_frames, 3))
+        targets = np.zeros((self.n_frames, 3))
+        for i in range(self.n_frames):
+            self.current_frame_id = i
+            positions[i] = self.position
+            targets[i] = self.position + self.forward * target_distance
+
+        # Restore current frame id.
+        self.current_frame_id = current_frame_id
+
+        # Compute intrinsics, the Pinhole camera does not currently support
+        # skew and offset from the center, so we throw away this information.
+        # Also we use the fov from the first intrinsic matrix if there is more than one
+        # because the PiholeCamera does not support sequences of fov values.
+        fov = np.rad2deg(2 * np.arctan(self.K[0, 1, 2] / self.K[0, 1, 1]))
+
+        return PinholeCamera(
+            positions,
+            targets,
+            self.cols,
+            self.rows,
+            fov=fov,
+            near=self.near,
+            far=self.far,
+            viewer=self.viewer,
+            **kwargs,
+        )
+
+    @hooked
+    def gui(self, imgui):
+        u, show = imgui.checkbox("Show frustum", self.frustum is not None)
+        if u:
+            if show:
+                self.show_frustum(self.cols, self.rows, self.far)
+            else:
+                self.hide_frustum()
+
+    @hooked
+    def gui_context_menu(self, imgui, x: int, y: int):
+        u, show = imgui.checkbox("Show frustum", self.frustum is not None)
+        if u:
+            if show:
+                self.show_frustum(self.cols, self.rows, self.far)
+            else:
+                self.hide_frustum()
+
+        imgui.spacing()
+        imgui.separator()
+        imgui.spacing()
+        super(Camera, self).gui_context_menu(imgui, x, y)

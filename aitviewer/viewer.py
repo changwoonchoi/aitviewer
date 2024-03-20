@@ -250,7 +250,8 @@ class Viewer(moderngl_window.WindowConfig):
 
         # Setup scene
         self.scene = Scene()
-        self.scene.camera = ViewerCamera(45.0)
+        # self.scene.camera = ViewerCamera(45.0)
+        self.scene.camera = ViewerCamera(60.0)
         self.scene.custom_font = self.custom_font
 
         # Settings
